@@ -3,8 +3,9 @@
 # TDA596 - Lab 1
 # server/server.py
 # Input: Node_ID total_number_of_ID
-# Student: John Doe
+# Student: Mats Högberg & Henrik Hildebrand
 # ------------------------------------------------------------------------------------------------------
+
 import traceback
 import sys
 import time
@@ -14,16 +15,18 @@ from threading import Thread
 
 from bottle import Bottle, run, request, template
 import requests
-# ------------------------------------------------------------------------------------------------------
+
+
 try:
     app = Bottle()
 
     board = "nothing" 
 
+    node_id = None
+    vessel_list = dict()
 
     # ------------------------------------------------------------------------------------------------------
-    # BOARD FUNCTIONS
-    # You will probably need to modify them
+    # BOARD FUNCTIONS (should be modified)
     # ------------------------------------------------------------------------------------------------------
     def add_new_element_to_store(entry_sequence, element, is_propagated_call=False):
         global board, node_id
@@ -32,7 +35,7 @@ try:
             board = element
             success = True
         except Exception as e:
-            print e
+            print(e)
         return success
 
     def modify_element_in_store(entry_sequence, modified_element, is_propagated_call = False):
@@ -42,7 +45,7 @@ try:
             board = modified_element
             success = True
         except Exception as e:
-            print e
+            print(e)
         return success
 
     def delete_element_from_store(entry_sequence, is_propagated_call = False):
@@ -52,7 +55,7 @@ try:
             board = ""
             success = True
         except Exception as e:
-            print e
+            print(e)
         return success
 
     # ------------------------------------------------------------------------------------------------------
@@ -67,13 +70,13 @@ try:
             elif 'GET' in req:
                 res = requests.get('http://{}{}'.format(vessel_ip, path))
             else:
-                print 'Non implemented feature!'
+                print('Non implemented feature!')
             # result is in res.text or res.json()
             print(res.text)
             if res.status_code == 200:
                 success = True
         except Exception as e:
-            print e
+            print(e)
         return success
 
     def propagate_to_vessels(path, payload = None, req = 'POST'):
@@ -83,13 +86,10 @@ try:
             if int(vessel_id) != node_id: # don't propagate to yourself
                 success = contact_vessel(vessel_ip, path, payload, req)
                 if not success:
-                    print "\n\nCould not contact vessel {}\n\n".format(vessel_id)
-
+                    print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
 
     # ------------------------------------------------------------------------------------------------------
     # ROUTES
-    # ------------------------------------------------------------------------------------------------------
-    # a single example (index) for get, and one for post
     # ------------------------------------------------------------------------------------------------------
     @app.route('/')
     def index():
@@ -99,9 +99,9 @@ try:
     @app.get('/board')
     def get_board():
         global board, node_id
-        print board
-        return template('server/boardcontents_template.tpl',board_title='Vessel {}'.format(node_id), board_dict=sorted({"0":board,}.iteritems()))
-    # ------------------------------------------------------------------------------------------------------
+        print(board)
+        return template('server/boardcontents_template.tpl', board_title='Vessel {}'.format(node_id), board_dict=sorted({"0":board,}.iteritems()))
+
     @app.post('/board')
     def client_add_received():
         '''Adds a new element to the board
@@ -118,7 +118,7 @@ try:
             # then call thread.start() to spawn the thread
             return True
         except Exception as e:
-            print e
+            print(e)
         return False
 
     @app.post('/board/<element_id:int>/')
@@ -151,11 +151,11 @@ try:
         try:
             run(app, host=vessel_list[str(node_id)], port=port)
         except Exception as e:
-            print e
-    # ------------------------------------------------------------------------------------------------------
+            print(e)
+
     if __name__ == '__main__':
         main()
 except Exception as e:
-        traceback.print_exc()
-        while True:
-            time.sleep(60.)
+    traceback.print_exc()
+    while True:
+        time.sleep(60.)
