@@ -114,7 +114,6 @@ class Lab():
             if "vessel" in server.name:
                 # We open a xterm and start the server
                 self.startServer(server)
-        makeTerm(node=simulation.getNodeByName("client1"), cmd="firefox")
         # We also start the Command Line Interface of Mininet
         CLI(simulation)
         # Once the CLI is closed (with exit), we can stop the simulation
