@@ -20,19 +20,20 @@ import requests
 try:
     app = Bottle()
 
-    board = "nothing" 
+    board = dict()
+    next_id = 1
 
     node_id = None
     vessel_list = dict()
 
     # ------------------------------------------------------------------------------------------------------
-    # BOARD FUNCTIONS (should be modified)
+    # BOARD FUNCTIONS
     # ------------------------------------------------------------------------------------------------------
     def add_new_element_to_store(entry_sequence, element, is_propagated_call=False):
         global board, node_id
         success = False
         try:
-            board = element
+            board[entry_sequence] = element
             success = True
         except Exception as e:
             print(e)
@@ -42,7 +43,7 @@ try:
         global board, node_id
         success = False
         try:
-            board = modified_element
+            board[entry_sequence] = modified_element
             success = True
         except Exception as e:
             print(e)
@@ -52,7 +53,7 @@ try:
         global board, node_id
         success = False
         try:
-            board = ""
+            board.pop(entry_sequence)
             success = True
         except Exception as e:
             print(e)
@@ -79,7 +80,7 @@ try:
             print(e)
         return success
 
-    def propagate_to_vessels(path, payload = None, req = 'POST'):
+    def propagate_to_vessels(path, payload=None, req='POST'):
         global vessel_list, node_id
 
         for vessel_id, vessel_ip in vessel_list.items():
@@ -87,6 +88,11 @@ try:
                 success = contact_vessel(vessel_ip, path, payload, req)
                 if not success:
                     print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
+    
+    def propagate_to_vessels_async(path, payload=None, req='POST'):
+        thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
+        thread.daemon = True
+        thread.start()
 
     # ------------------------------------------------------------------------------------------------------
     # ROUTES
@@ -94,42 +100,62 @@ try:
     @app.route('/')
     def index():
         global board, node_id
-        return template('server/index.tpl', board_title='Vessel {}'.format(node_id), board_dict=sorted({"0":board,}.iteritems()), members_name_string='Mats Högberg & Henrik Hildebrand')
+        return template('server/index.tpl', board_title='Vessel {}'.format(node_id), board_dict=sorted(board.iteritems()), members_name_string='Mats Högberg & Henrik Hildebrand')
 
     @app.get('/board')
     def get_board():
         global board, node_id
         print(board)
-        return template('server/boardcontents_template.tpl', board_title='Vessel {}'.format(node_id), board_dict=sorted({"0":board,}.iteritems()))
+        return template('server/boardcontents_template.tpl', board_title='Vessel {}'.format(node_id), board_dict=sorted(board.iteritems()))
 
     @app.post('/board')
     def client_add_received():
         '''Adds a new element to the board
         Called directly when a user is doing a POST request on /board'''
-        global board, node_id
+        global board, node_id, next_id
         try:
             new_entry = request.forms.get('entry')
-            add_new_element_to_store(None, new_entry) # you might want to change None here
-            # you should propagate something
-            # Please use threads to avoid blocking
-            # thread = Thread(target=???,args=???)
-            # For example: thread = Thread(target=propagate_to_vessels, args=....)
-            # you should create the thread as a deamon with thread.daemon = True
-            # then call thread.start() to spawn the thread
-            return True
+            add_new_element_to_store(next_id, new_entry)
+            propagate_to_vessels_async("/propagate/add/{}".format(next_id), {"entry": new_entry})
+            next_id += 1
+            return "add success"
         except Exception as e:
             print(e)
-        return False
+        return "add failure"
 
     @app.post('/board/<element_id:int>/')
     def client_action_received(element_id):
-        # todo
-        pass
+        try:
+            delete = request.forms.get('delete')
+            if delete == "1":
+                delete_element_from_store(element_id)
+                propagate_to_vessels_async("/propagate/remove/{}".format(element_id))
+            else:
+                entry = request.forms.get('entry')
+                modify_element_in_store(element_id, entry)
+                propagate_to_vessels_async("/propagate/modify/{}".format(element_id), {"entry": entry})
+            return "modify/delete success"
+        except Exception as e:
+            print(e)
+        return "modify/delete failure"
 
-    @app.post('/propagate/<action>/<element_id>')
+    @app.post('/propagate/<action>/<element_id:int>')
     def propagation_received(action, element_id):
-        # todo
-        pass
+        global next_id
+        try:
+            if action == "add":
+                new_entry = request.forms.get("entry")
+                add_new_element_to_store(element_id, new_entry)
+                next_id = element_id + 1
+            elif action == "remove":
+                delete_element_from_store(element_id)
+            elif action == "modify":
+                modified_entry = request.forms.get("entry")
+                modify_element_in_store(element_id, modified_entry)
+            return "success"
+        except Exception as e:
+            print(e)
+        return "failure"
         
     # ------------------------------------------------------------------------------------------------------
     # EXECUTION
