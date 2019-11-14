@@ -20,7 +20,10 @@ import requests
 try:
     app = Bottle()
 
+    # board keeps a mapping from id to entry.
     board = dict()
+
+    # next_id keeps track of the next available id for an entry
     next_id = 1
 
     node_id = None
@@ -39,7 +42,7 @@ try:
             print(e)
         return success
 
-    def modify_element_in_store(entry_sequence, modified_element, is_propagated_call = False):
+    def modify_element_in_store(entry_sequence, modified_element, is_propagated_call=False):
         global board, node_id
         success = False
         try:
@@ -49,7 +52,7 @@ try:
             print(e)
         return success
 
-    def delete_element_from_store(entry_sequence, is_propagated_call = False):
+    def delete_element_from_store(entry_sequence, is_propagated_call=False):
         global board, node_id
         success = False
         try:
@@ -90,6 +93,7 @@ try:
                     print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
     
     def propagate_to_vessels_async(path, payload=None, req='POST'):
+        # Start the propagation in a new daemon thread in order to not block the ongoing request.
         thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
         thread.daemon = True
         thread.start()
@@ -117,6 +121,7 @@ try:
             new_entry = request.forms.get('entry')
             add_new_element_to_store(next_id, new_entry)
             propagate_to_vessels_async("/propagate/add/{}".format(next_id), {"entry": new_entry})
+            # Increment next_id to make room for the next entry.
             next_id += 1
             return "add success"
         except Exception as e:
