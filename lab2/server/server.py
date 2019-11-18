@@ -92,6 +92,7 @@ try:
                 success = True
         except Exception as e:
             print(e)
+            
         return success
 
     def contact_vessel_async(vessel_ip, path, payload=None, req='POST'):
@@ -114,10 +115,6 @@ try:
         thread.daemon = True
         thread.start()
 
-    def send_to_leader(entry):
-        global leader_address
-        contact_vessel_async(leader_address, '/leader/add', payload={'entry': entry}, req='POST')
-
     # ------------------------------------------------------------------------------------------------------
     # ROUTES
     # ------------------------------------------------------------------------------------------------------
@@ -139,7 +136,7 @@ try:
         global board, node_id, next_id
         try:
             new_entry = request.forms.get('entry')
-            send_to_leader(new_entry)
+            contact_vessel_async(leader_address, '/leader/add', payload={'entry': new_entry}, req='POST')
             return "add success"
         except Exception as e:
             print(e)
@@ -150,12 +147,10 @@ try:
         try:
             delete = request.forms.get('delete')
             if delete == "1":
-                delete_element_from_store(element_id)
-                propagate_to_vessels_async("/propagate/remove/{}".format(element_id))
+                contact_vessel_async(leader_address, '/leader/remove/{}'.format(element_id), req='POST')
             else:
                 entry = request.forms.get('entry')
-                modify_element_in_store(element_id, entry)
-                propagate_to_vessels_async("/propagate/modify/{}".format(element_id), {"entry": entry})
+                contact_vessel_async(leader_address, '/leader/modify/{}'.format(element_id), payload={'entry': entry}, req='POST')
             return "modify/delete success"
         except Exception as e:
             print(e)
@@ -189,9 +184,19 @@ try:
         next_id += 1
         print("leader end")
 
-    @app.post('/leader/modify')
-    def leader_modify_delete():
-        pass
+    @app.post('/leader/modify/<element_id:int>')
+    def leader_modify(element_id):
+        print("Leader begin modify")
+        new_entry = request.forms.get('entry')
+        modify_element_in_store(element_id, new_entry)
+        # Propagation of modifications needs to be done synchronously in order to keep a consistent state across all nodes.
+        propagate_to_vessels("/propagate/modify/{}".format(element_id), {"entry": new_entry})
+
+    @app.post('/leader/remove/<element_id:int>')
+    def leader_delete(element_id):
+        print("Leader begin remove")
+        delete_element_from_store(element_id)
+        propagate_to_vessels_async("/propagate/remove/{}".format(element_id))
 
     # ------------------------------------------------------------------------------------------------------
     # LEADER ELECTION
