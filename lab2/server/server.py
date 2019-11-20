@@ -78,7 +78,7 @@ try:
     # ------------------------------------------------------------------------------------------------------
     def contact_vessel(vessel_ip, path, payload=None, req='POST'):
         # Try to contact another server (vessel) through a POST or GET, once
-        success = False
+        res = None
         try:
             if 'POST' in req:
                 res = requests.post('http://{}{}'.format(vessel_ip, path), data=payload)
@@ -88,12 +88,9 @@ try:
                 print('Non implemented feature!')
             # result is in res.text or res.json()
             print(res.text)
-            if res.status_code == 200:
-                success = True
         except Exception as e:
             print(e)
-            
-        return success
+        return res
 
     def contact_vessel_async(vessel_ip, path, payload=None, req='POST'):
         thread = Thread(target=contact_vessel, args=(vessel_ip, path, payload, req))
@@ -133,13 +130,16 @@ try:
     def client_add_received():
         '''Adds a new element to the board
         Called directly when a user is doing a POST request on /board'''
-        global board, node_id, next_id
+        global board, node_id, next_id, leader_random_id
         try:
             new_entry = request.forms.get('entry')
             contact_vessel_async(leader_address, '/leader/add', payload={'entry': new_entry}, req='POST')
             return "add success"
         except Exception as e:
             print(e)
+            # update_leader()
+            # client_add_received()
+            
         return "add failure"
 
     @app.post('/board/<element_id:int>/')
@@ -154,6 +154,8 @@ try:
             return "modify/delete success"
         except Exception as e:
             print(e)
+            # update_leader()
+            # client_add_received()
         return "modify/delete failure"
 
     @app.post('/propagate/<action>/<element_id:int>')
@@ -222,6 +224,39 @@ try:
             # This request originated in some other node. Add this node and pass along to next node.
             received_vessel_list[random_node_id] = vessel_list[random_node_id]
             contact_vessel_async(next_node_address, '/leader-election', payload=received_vessel_list, req='POST')
+    
+    # def update_leader():
+    #   global leader_random_id, vessel_list, leader_address
+    #   vessel_list.pop(leader_random_id)
+    #   leader_random_id = sorted([int (x) for x in vessel_list.keys()])[-1]
+    #   leader_address = vessel_list[leader_random_id]
+
+
+    # ------------------------------------------------------------------------------------------------------
+    # NODE ADDITION
+    # ------------------------------------------------------------------------------------------------------
+    def initiate_node_addition(other_node_address):
+        global random_node_id, vessel_list, leader_random_id, leader_address
+        time.sleep(5.)
+        res = contact_vessel(other_node_address, '/vessels', req='GET').json()
+        other_vessel_list = res['vessel_list']
+        for address in other_vessel_list.values():
+            contact_vessel_async(address, '/register-node', payload={'random_id': random_node_id, 'address': vessel_list[random_node_id]}, req='POST')
+        vessel_list.update(other_vessel_list)
+        leader_random_id = res['leader_random_id']
+        leader_address = vessel_list[leader_random_id]
+
+    @app.get('/vessels')
+    def get_vessels():
+        global vessel_list, leader_random_id
+        return {'vessel_list': vessel_list, 'leader_random_id': leader_random_id}
+
+    @app.post('/register-node')
+    def register_node():
+        global vessel_list
+        random_id = request.forms.get('random_id')
+        address = request.forms.get('address')
+        vessel_list[random_id] = address
 
     # ------------------------------------------------------------------------------------------------------
     # EXECUTION
@@ -238,14 +273,19 @@ try:
 
         # On initialization only the address of the node and its next neighbour is known.
         node_address = '10.1.0.{}'.format(node_id)
-        next_node_address = '10.1.0.{}'.format(((node_id) % args.nbv) + 1)
+        next_node_address = '10.1.0.{}'.format(((node_id) % (args.nbv - 1)) + 1)
 
         # Initiate leader election in a new thread.
         random_node_id = str(randint(0, 1000))
         vessel_list[random_node_id] = node_address
-        thread = Thread(target=initiate_leader_election)
-        thread.daemon = True
-        thread.start()
+        if node_id == args.nbv:
+            thread = Thread(target=initiate_node_addition, args=('10.1.0.1', ))
+            thread.daemon = True
+            thread.start()
+        else:
+            thread = Thread(target=initiate_leader_election)
+            thread.daemon = True
+            thread.start()
 
         run(app, host=vessel_list[random_node_id], port=port)
 
