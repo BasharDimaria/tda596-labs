@@ -79,17 +79,14 @@ try:
     def contact_vessel(vessel_ip, path, payload=None, req='POST'):
         # Try to contact another server (vessel) through a POST or GET, once
         res = None
-        try:
-            if 'POST' in req:
-                res = requests.post('http://{}{}'.format(vessel_ip, path), data=payload)
-            elif 'GET' in req:
-                res = requests.get('http://{}{}'.format(vessel_ip, path))
-            else:
-                print('Non implemented feature!')
-            # result is in res.text or res.json()
-            print(res.text)
-        except Exception as e:
-            print(e)
+        if 'POST' in req:
+            res = requests.post('http://{}{}'.format(vessel_ip, path), data=payload)
+        elif 'GET' in req:
+            res = requests.get('http://{}{}'.format(vessel_ip, path))
+        else:
+            raise Exception('invalid request type')
+        # result is in res.text or res.json()
+        res.raise_for_status()
         return res
 
     def contact_vessel_async(vessel_ip, path, payload=None, req='POST'):
@@ -99,18 +96,33 @@ try:
 
     def propagate_to_vessels(path, payload=None, req='POST'):
         global vessel_list, random_node_id
-
         for vessel_id, vessel_ip in vessel_list.items():
             if vessel_id != random_node_id: # don't propagate to yourself
-                success = contact_vessel(vessel_ip, path, payload, req)
-                if not success:
+                try:
+                    contact_vessel(vessel_ip, path, payload, req)
+                except:
                     print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
+                    vessel_list.pop(vessel_id)
     
     def propagate_to_vessels_async(path, payload=None, req='POST'):
         # Start the propagation in a new daemon thread in order to not block the ongoing request.
         thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
         thread.daemon = True
         thread.start()
+
+    def contact_leader_async(path, payload=None, req='POST'):
+        thread = Thread(target=contact_leader, args=(path, payload, req))
+        thread.daemon = True
+        thread.start()
+
+    def contact_leader(path, payload=None, req='POST'):
+        global leader_address
+        try:
+            contact_vessel(leader_address, path, payload=payload, req='POST')
+        except requests.exceptions.ConnectionError as e:
+            print(e)
+            elect_next_leader()
+            contact_leader(path, payload, req)
 
     # ------------------------------------------------------------------------------------------------------
     # ROUTES
@@ -133,7 +145,7 @@ try:
         global board, node_id, next_id, leader_random_id
         try:
             new_entry = request.forms.get('entry')
-            contact_vessel_async(leader_address, '/leader/add', payload={'entry': new_entry}, req='POST')
+            contact_leader_async('/leader/add', payload={'entry': new_entry}, req='POST')
             return "add success"
         except Exception as e:
             print(e)
@@ -147,10 +159,10 @@ try:
         try:
             delete = request.forms.get('delete')
             if delete == "1":
-                contact_vessel_async(leader_address, '/leader/remove/{}'.format(element_id), req='POST')
+                contact_leader_async('/leader/remove/{}'.format(element_id), req='POST')
             else:
                 entry = request.forms.get('entry')
-                contact_vessel_async(leader_address, '/leader/modify/{}'.format(element_id), payload={'entry': entry}, req='POST')
+                contact_leader_async('/leader/modify/{}'.format(element_id), payload={'entry': entry}, req='POST')
             return "modify/delete success"
         except Exception as e:
             print(e)
@@ -165,6 +177,7 @@ try:
             if action == "add":
                 new_entry = request.forms.get("entry")
                 add_new_element_to_store(element_id, new_entry)
+                next_id = element_id + 1
             elif action == "remove":
                 delete_element_from_store(element_id)
             elif action == "modify":
@@ -225,12 +238,11 @@ try:
             received_vessel_list[random_node_id] = vessel_list[random_node_id]
             contact_vessel_async(next_node_address, '/leader-election', payload=received_vessel_list, req='POST')
     
-    # def update_leader():
-    #   global leader_random_id, vessel_list, leader_address
-    #   vessel_list.pop(leader_random_id)
-    #   leader_random_id = sorted([int (x) for x in vessel_list.keys()])[-1]
-    #   leader_address = vessel_list[leader_random_id]
-
+    def elect_next_leader():
+        global leader_random_id, vessel_list, leader_address
+        vessel_list.pop(leader_random_id)
+        leader_random_id = str(max([int(x) for x in vessel_list.keys()]))
+        leader_address = vessel_list[leader_random_id]
 
     # ------------------------------------------------------------------------------------------------------
     # NODE ADDITION
