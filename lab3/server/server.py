@@ -63,10 +63,12 @@ try:
         # Try to contact another server (vessel) through a POST or GET, once
         success = False
         try:
+            url = 'http://{}{}'.format(vessel_ip, path)
+            print('Sending request to {}'.format(url))
             if 'POST' in req:
-                res = requests.post('http://{}{}'.format(vessel_ip, path), data=payload)
+                res = requests.post(url, data=payload, timeout=(3.05, 1))
             elif 'GET' in req:
-                res = requests.get('http://{}{}'.format(vessel_ip, path))
+                res = requests.get(url, timeout=(3.05, 1))
             else:
                 print('Non implemented feature!')
             # result is in res.text or res.json()
@@ -84,13 +86,26 @@ try:
             if int(vessel_id) != node_id: # don't propagate to yourself
                 success = contact_vessel(vessel_ip, path, payload, req)
                 if not success:
-                    print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
-    
+                    thread = Thread(target=retry_request, args=(vessel_ip, path, payload, req))
+                    thread.daemon = True
+                    thread.start()
+
     def propagate_to_vessels_async(path, payload=None, req='POST'):
         # Start the propagation in a new daemon thread in order to not block the ongoing request.
         thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
         thread.daemon = True
         thread.start()
+
+    def retry_request(vessel_ip, path, payload, req='POST'):
+        sleep_max = 2e5  # 32 seconds
+        sleep_multiplier = 2
+        sleep = 1
+        success = False
+        while not success:
+            print("\nCould not contact vessel {}. Trying again in {} seconds ...".format(vessel_ip, sleep))
+            time.sleep(sleep)
+            success = contact_vessel(vessel_ip, path, payload, req)
+            sleep = min(sleep * sleep_multiplier, sleep_max)
 
     # ------------------------------------------------------------------------------------------------------
     # ROUTES
@@ -161,7 +176,7 @@ try:
         except Exception as e:
             print(e)
         return "failure"
-        
+
     # ------------------------------------------------------------------------------------------------------
     # EXECUTION
     # ------------------------------------------------------------------------------------------------------
@@ -180,10 +195,7 @@ try:
             vessel_list[i] = '10.1.0.{}'.format(str(i))
         node_address = vessel_list[node_id]
 
-        try:
-            run(app, host=node_address, port=port)
-        except Exception as e:
-            print(e)
+        run(app, host=node_address, port=port)
 
     if __name__ == '__main__':
         main()
