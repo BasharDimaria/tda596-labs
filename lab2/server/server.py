@@ -57,7 +57,9 @@ try:
         global board, node_id
         success = False
         try:
-            board[entry_sequence] = modified_element
+            # Don't update entries that have been deleted.
+            if board.get(entry_sequence) is not None:
+                board[entry_sequence] = modified_element
             success = True
         except Exception as e:
             print(e)
@@ -103,15 +105,10 @@ try:
                 except:
                     print("\n\nCould not contact vessel {}\n\n".format(vessel_id))
                     vessel_list.pop(vessel_id)
-    
+
     def propagate_to_vessels_async(path, payload=None, req='POST'):
         # Start the propagation in a new daemon thread in order to not block the ongoing request.
         thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
-        thread.daemon = True
-        thread.start()
-
-    def contact_leader_async(path, payload=None, req='POST'):
-        thread = Thread(target=contact_leader, args=(path, payload, req))
         thread.daemon = True
         thread.start()
 
@@ -124,8 +121,13 @@ try:
             elect_next_leader()
             contact_leader(path, payload, req)
 
+    def contact_leader_async(path, payload=None, req='POST'):
+        thread = Thread(target=contact_leader, args=(path, payload, req))
+        thread.daemon = True
+        thread.start()
+
     # ------------------------------------------------------------------------------------------------------
-    # ROUTES
+    # BOARD ROUTES
     # ------------------------------------------------------------------------------------------------------
     @app.route('/')
     def index():
@@ -135,7 +137,6 @@ try:
     @app.get('/board')
     def get_board():
         global board, node_id, random_node_id, leader_address, leader_random_id
-        print(board)
         return template('server/boardcontents_template.tpl', board_title='Vessel {} ({}), leader {} ({})'.format(node_id, random_node_id, leader_address, leader_random_id), board_dict=sorted(board.iteritems()))
 
     @app.post('/board')
@@ -149,8 +150,6 @@ try:
             return "add success"
         except Exception as e:
             print(e)
-            # update_leader()
-            # client_add_received()
             
         return "add failure"
 
@@ -166,10 +165,11 @@ try:
             return "modify/delete success"
         except Exception as e:
             print(e)
-            # update_leader()
-            # client_add_received()
         return "modify/delete failure"
 
+    # ------------------------------------------------------------------------------------------------------
+    # PROPAGATION ROUTES
+    # ------------------------------------------------------------------------------------------------------
     @app.post('/propagate/<action>/<element_id:int>')
     def propagation_received(action, element_id):
         global next_id
@@ -177,7 +177,7 @@ try:
             if action == "add":
                 new_entry = request.forms.get("entry")
                 add_new_element_to_store(element_id, new_entry)
-                next_id = element_id + 1
+                next_id = max(next_id, element_id) + 1
             elif action == "remove":
                 delete_element_from_store(element_id)
             elif action == "modify":
@@ -194,7 +194,7 @@ try:
         print("leader begin")
         new_entry = request.forms.get('entry')
         add_new_element_to_store(next_id, new_entry)
-        propagate_to_vessels_async("/propagate/add/{}".format(next_id), {"entry": new_entry})
+        propagate_to_vessels("/propagate/add/{}".format(next_id), {"entry": new_entry})
         # Increment next_id to make room for the next entry.
         next_id += 1
         print("leader end")
@@ -211,13 +211,20 @@ try:
     def leader_delete(element_id):
         print("Leader begin remove")
         delete_element_from_store(element_id)
-        propagate_to_vessels_async("/propagate/remove/{}".format(element_id))
+        propagate_to_vessels("/propagate/remove/{}".format(element_id))
 
     # ------------------------------------------------------------------------------------------------------
     # LEADER ELECTION
     # ------------------------------------------------------------------------------------------------------
     def initiate_leader_election():
-        global random_node_id, next_node_address
+        # Initiates the leader election process on the network. It is assumed that the nodes are connected
+        # on a ring, and that all nodes only know of their right neighbour in the ring. The process works
+        # by each node initiating a call to collect the addresses of all of the other nodes on the network.
+        # When receiving a request, a node adds its own address to the list of vessels and forwards the
+        # request to the next node. When a node sees its own ID in an incoming request, it knows that its
+        # request has made its way around the entire ring and thus contains all other nodes in the network.
+        # When this happens, the node elects the node with the largest ID to be the leader.
+        global random_node_id, next_node_address, vessel_list
         # Give the next node some time to start before initiating the leader election process.
         time.sleep(1.)
         contact_vessel_async(next_node_address, '/leader-election', payload=vessel_list, req='POST')
@@ -240,7 +247,8 @@ try:
     
     def elect_next_leader():
         global leader_random_id, vessel_list, leader_address
-        vessel_list.pop(leader_random_id)
+        if vessel_list.get(leader_random_id) is not None:
+            vessel_list.pop(leader_random_id)
         leader_random_id = str(max([int(x) for x in vessel_list.keys()]))
         leader_address = vessel_list[leader_random_id]
 
@@ -248,7 +256,12 @@ try:
     # NODE ADDITION
     # ------------------------------------------------------------------------------------------------------
     def initiate_node_addition(other_node_address):
+        # Initiates the protocol for adding a new node to the network. It is assumed that no more than one
+        # node will be added to the network at the same time. This process works by first fetching the
+        # vessel list and current leader from another node in the network, and broadcasting your own ID and
+        # address to all nodes on the network.
         global random_node_id, vessel_list, leader_random_id, leader_address
+        # Sleep for some time in order to let the leader election process for the other nodes finish.
         time.sleep(5.)
         res = contact_vessel(other_node_address, '/vessels', req='GET').json()
         other_vessel_list = res['vessel_list']
@@ -287,17 +300,21 @@ try:
         node_address = '10.1.0.{}'.format(node_id)
         next_node_address = '10.1.0.{}'.format(((node_id) % (args.nbv - 1)) + 1)
 
-        # Initiate leader election in a new thread.
         random_node_id = str(randint(0, 1000))
         vessel_list[random_node_id] = node_address
+
         if node_id == args.nbv:
-            thread = Thread(target=initiate_node_addition, args=('10.1.0.1', ))
-            thread.daemon = True
-            thread.start()
+            # Simulate that one node gets added to the network at a later point in time.
+            init_fn = initiate_node_addition
+            init_args = ('10.1.0.1',)
         else:
-            thread = Thread(target=initiate_leader_election)
-            thread.daemon = True
-            thread.start()
+            # All other nodes to leader election.
+            init_fn = initiate_leader_election
+            init_args = ()
+
+        thread = Thread(target=init_fn, args=init_args)
+        thread.daemon = True
+        thread.start()
 
         run(app, host=vessel_list[random_node_id], port=port)
 

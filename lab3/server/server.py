@@ -66,7 +66,7 @@ try:
             url = 'http://{}{}'.format(vessel_ip, path)
             print('Sending request to {}'.format(url))
             if 'POST' in req:
-                res = requests.post(url, data=payload, timeout=(3.05, 1))
+                res = requests.post(url, json=payload, timeout=(3.05, 1))
             elif 'GET' in req:
                 res = requests.get(url, timeout=(3.05, 1))
             else:
@@ -79,24 +79,35 @@ try:
             print(e)
         return success
 
-    def propagate_to_vessels(path, payload=None, req='POST'):
-        global vessel_list, node_id
-
-        for vessel_id, vessel_ip in vessel_list.items():
+    def propagate_to_vessels(path, vessels, payload=None):
+        global node_id
+        for vessel_id in vessels:
+            vessel_ip = vessel_list[vessel_id]
             if int(vessel_id) != node_id: # don't propagate to yourself
-                success = contact_vessel(vessel_ip, path, payload, req)
+                success = contact_vessel(vessel_ip, path, payload, req='POST')
                 if not success:
-                    thread = Thread(target=retry_request, args=(vessel_ip, path, payload, req))
+                    thread = Thread(target=retry_request, args=(vessel_ip, path, payload, 'POST'))
                     thread.daemon = True
                     thread.start()
 
-    def propagate_to_vessels_async(path, payload=None, req='POST'):
+    def propagate_to_vessels_async(path, vessels, payload=None):
         # Start the propagation in a new daemon thread in order to not block the ongoing request.
-        thread = Thread(target=propagate_to_vessels, args=(path, payload, req))
+        thread = Thread(target=propagate_to_vessels, args=(path, vessels, payload))
         thread.daemon = True
         thread.start()
 
-    def retry_request(vessel_ip, path, payload, req='POST'):
+    def propagate_to_vessels_async_initial(path, payload=None):
+        global vessel_list
+        propagate_to_vessels_async(
+            path,
+            vessel_list.keys(),
+            payload={
+                'vessels': vessel_list.keys(),
+                'payload': payload,
+            },
+        )
+
+    def retry_request(vessel_ip, path, payload, req):
         sleep_max = 2e5  # 32 seconds
         sleep_multiplier = 2
         sleep = 1
@@ -130,7 +141,7 @@ try:
             element_id = "{}-{}".format(next_id, node_address)
             version = "{}-{}".format(1, node_address)
             add_new_element_to_store(element_id, version, new_entry)
-            propagate_to_vessels_async("/propagate/add/{}".format(element_id), {"version": version, "entry": new_entry})
+            propagate_to_vessels_async_initial("/propagate/add/{}".format(element_id), {"version": version,"entry": new_entry})
             # Increment next_id to make room for the next entry.
             next_id += 1
             return "add success"
@@ -145,13 +156,13 @@ try:
             delete = request.forms.get('delete')
             if delete == "1":
                 delete_element_from_store(element_id)
-                propagate_to_vessels_async("/propagate/remove/{}".format(element_id))
+                propagate_to_vessels_async_initial("/propagate/remove/{}".format(element_id))
             else:
                 entry = request.forms.get('entry')
                 version = request.forms.get('version')
                 new_version = "{}-{}".format(int(version.split('-')[0]) + 1, node_address)
                 modify_element_in_store(element_id, new_version, entry)
-                propagate_to_vessels_async("/propagate/modify/{}".format(element_id), {"version": new_version, "entry": entry})
+                propagate_to_vessels_async_initial("/propagate/modify/{}".format(element_id), {"version": new_version, "entry": entry})
             return "modify/delete success"
         except Exception as e:
             print(e)
@@ -159,19 +170,30 @@ try:
 
     @app.post('/propagate/<action>/<element_id>')
     def propagation_received(action, element_id):
-        global next_id
+        global next_id, vessel_list
         try:
+            payload = request.json['payload']
             if action == "add":
-                new_entry = request.forms.get("entry")
-                version = request.forms.get("version")
+                new_entry = payload.get("entry")
+                version = payload.get("version")
                 add_new_element_to_store(element_id, version, new_entry)
                 next_id = int(element_id.split("-")[0]) + 1
             elif action == "remove":
                 delete_element_from_store(element_id)
             elif action == "modify":
-                modified_entry = request.forms.get("entry")
-                new_version = request.forms.get("version")
+                modified_entry = payload.get("entry")
+                new_version = payload.get("version")
                 modify_element_in_store(element_id, new_version, modified_entry)
+
+            propagated_vessels = set(request.json['vessels'])
+            own_vessels = set(vessel_list.keys())
+            non_propagated_vessels = own_vessels - propagated_vessels
+            propagate_to_vessels_async(
+                request.fullpath,
+                non_propagated_vessels,
+                payload={'vessels': list(propagated_vessels.union(own_vessels)), 'payload': payload},
+            )
+
             return "success"
         except Exception as e:
             print(e)
@@ -190,9 +212,28 @@ try:
         args = parser.parse_args()
         node_id = args.nid
         vessel_list = dict()
-        # We need to write the other vessels IP, based on the knowledge of their number
-        for i in range(1, args.nbv + 1):
-            vessel_list[i] = '10.1.0.{}'.format(str(i))
+
+        # Split the network into two segments.
+        if node_id <= args.nbv / 2:
+            start = 1
+            end = args.nbv / 2
+        else:
+            start = args.nbv / 2 + 1
+            end = args.nbv
+
+        for i in range(start, end + 1):
+            vessel_list[i] = '10.1.0.{}'.format(i)
+
+        # Connect the first and last nodes to connect the two segments.
+        if node_id == 1:
+            vessel_list[args.nbv] = '10.1.0.{}'.format(args.nbv)
+        elif node_id == args.nbv:
+            vessel_list[1] = '10.1.0.1'
+            # Sleep the last node for 30 seconds to simulate a network segmentation.
+            print("Going to sleep...")
+            time.sleep(45.)
+            print("Woke up!")
+
         node_address = vessel_list[node_id]
 
         run(app, host=node_address, port=port)
